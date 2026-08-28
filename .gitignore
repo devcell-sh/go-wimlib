@@ -1,1 +1,4 @@
 /vendor/
+.devcell.toml
+.devcell/
+.idea/
