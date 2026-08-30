@@ -3,7 +3,6 @@
 package wimlib
 
 /*
-#cgo pkg-config: wimlib
 #include <wimlib.h>
 #include <stdlib.h>
 */

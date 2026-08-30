@@ -1,0 +1,46 @@
+version: "3"
+
+vars:
+  WIMLIB_VERSION: 1.14.4
+  WIMLIB_URL: https://wimlib.net/downloads/wimlib-{{.WIMLIB_VERSION}}.tar.gz
+  PLATFORM:
+    sh: echo "$(go env GOOS)_$(go env GOARCH)"
+
+tasks:
+  test:
+    desc: Run tests against the system libwim (dynamic)
+    cmds:
+      - go test -tags wimlib ./...
+
+  test:static:
+    desc: Run tests against the vendored static libwim.a
+    cmds:
+      - go test -tags 'wimlib wimlib_static' ./...
+
+  static-lib:
+    desc: Build wimlib {{.WIMLIB_VERSION}} statically and vendor libwim.a for this platform
+    vars:
+      BUILD_DIR: .build/wimlib-{{.WIMLIB_VERSION}}
+    cmds:
+      - mkdir -p .build lib/include lib/{{.PLATFORM}} lib/THIRD_PARTY_LICENSES
+      - |
+        if [ ! -d "{{.BUILD_DIR}}" ]; then
+          curl -fsSL "{{.WIMLIB_URL}}" | tar -xz -C .build
+        fi
+      # NTFS-3G and FUSE support pull in extra shared deps the bindings
+      # never use — a WIM-only libwim keeps the archive self-contained.
+      - |
+        cd "{{.BUILD_DIR}}" && ./configure \
+          --enable-static --disable-shared \
+          --without-ntfs-3g --without-fuse \
+          CFLAGS="-O2 -fPIC" >/dev/null
+      - make -C "{{.BUILD_DIR}}" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" >/dev/null
+      - cp "{{.BUILD_DIR}}/.libs/libwim.a" "lib/{{.PLATFORM}}/libwim.a"
+      - cp "{{.BUILD_DIR}}/include/wimlib.h" lib/include/wimlib.h
+      - cp "{{.BUILD_DIR}}/COPYING" "{{.BUILD_DIR}}/COPYING.LGPLv3" "{{.BUILD_DIR}}/COPYING.GPLv3" lib/THIRD_PARTY_LICENSES/ 2>/dev/null || cp "{{.BUILD_DIR}}/COPYING"* lib/THIRD_PARTY_LICENSES/
+      - echo "vendored lib/{{.PLATFORM}}/libwim.a (wimlib {{.WIMLIB_VERSION}})"
+
+  clean:
+    desc: Remove the wimlib build tree (vendored lib/ artifacts stay)
+    cmds:
+      - rm -rf .build

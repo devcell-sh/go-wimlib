@@ -2,3 +2,5 @@
 .devcell.toml
 .devcell/
 .idea/
+/.build/
+/lib/**/*.a
