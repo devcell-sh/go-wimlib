@@ -1,4 +1,4 @@
-//go:build !wimlib
+//go:build !cgo
 
 package wimlib
 
@@ -42,6 +42,10 @@ func (w *WIM) ImageCount() (int, error) {
 
 func (w *WIM) ImageDescription(imageNum int) (string, error) {
 	return "", errNotAvailable
+}
+
+func (w *WIM) AddEmptyImage(name string) (int, error) {
+	return 0, errNotAvailable
 }
 
 func (w *WIM) Write(path string) error {

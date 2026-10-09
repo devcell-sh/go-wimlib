@@ -1,4 +1,4 @@
-//go:build wimlib
+//go:build cgo
 
 package wimlib
 
@@ -289,6 +289,23 @@ func (w *WIM) ImageDescription(imageNum int) (string, error) {
 		return "", nil
 	}
 	return C.GoString((*C.char)(unsafe.Pointer(desc))), nil
+}
+
+// AddEmptyImage adds a new, empty image to the WIM and returns its 1-based
+// index. Files can then be added via UpdateImageAdd/UpdateImageAddTree.
+func (w *WIM) AddEmptyImage(name string) (int, error) {
+	var cName *C.char
+	if name != "" {
+		cName = C.CString(name)
+		defer C.free(unsafe.Pointer(cName))
+	}
+
+	var newIdx C.int
+	ret := C.wimlib_add_empty_image(w.cPtr(), (*C.wimlib_tchar)(unsafe.Pointer(cName)), &newIdx)
+	if ret != 0 {
+		return 0, fmt.Errorf("wimlib_add_empty_image(%s): %s", name, errStr(ret))
+	}
+	return int(newIdx), nil
 }
 
 func (w *WIM) Write(path string) error {

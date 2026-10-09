@@ -1,4 +1,4 @@
-//go:build wimlib && wimlib_static
+//go:build cgo && wimlib_static
 
 package wimlib
 
