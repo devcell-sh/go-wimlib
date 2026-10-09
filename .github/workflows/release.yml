@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        wimlib-version: ["1.14.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+
+      - name: Install wimlib ${{ matrix.wimlib-version }} from source
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libfuse3-dev libntfs-3g-dev pkg-config
+          curl -fsSL "https://wimlib.net/downloads/wimlib-${{ matrix.wimlib-version }}.tar.gz" | tar -xz
+          cd "wimlib-${{ matrix.wimlib-version }}"
+          ./configure --quiet
+          make -j"$(nproc)" --quiet
+          sudo make install --quiet
+          sudo ldconfig
+
+      - name: Test (dynamic)
+        run: go test -v ./...
+
+      - name: Test (static)
+        run: |
+          task static-lib
+          go test -v -tags wimlib_static ./...
