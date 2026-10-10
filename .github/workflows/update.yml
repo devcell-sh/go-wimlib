@@ -68,7 +68,7 @@ jobs:
 
       - name: Install Task
         if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
 
       - name: Install wimlib ${{ steps.versions.outputs.latest }} from source
         if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
