@@ -1,0 +1,142 @@
+name: Dependabot Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for patch and minor updates
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        wimlib-version: ["1.14.4"]
+    outputs:
+      test-log: ${{ steps.capture-log.outputs.log }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+
+      - name: Install wimlib ${{ matrix.wimlib-version }} from source
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libfuse3-dev libntfs-3g-dev pkg-config
+          curl -fsSL "https://wimlib.net/downloads/wimlib-${{ matrix.wimlib-version }}.tar.gz" | tar -xz
+          cd "wimlib-${{ matrix.wimlib-version }}"
+          ./configure --quiet
+          make -j"$(nproc)" --quiet
+          sudo make install --quiet
+          sudo ldconfig
+
+      - name: Test (dynamic)
+        id: test-dynamic
+        continue-on-error: true
+        run: go test -v ./... 2>&1 | tee /tmp/test-output.log
+
+      - name: Test (static)
+        id: test-static
+        if: steps.test-dynamic.outcome == 'success'
+        continue-on-error: true
+        run: |
+          task static-lib
+          go test -v -tags wimlib_static ./... 2>&1 | tee -a /tmp/test-output.log
+
+      - name: Capture test log
+        id: capture-log
+        if: steps.test-dynamic.outcome == 'failure' || steps.test-static.outcome == 'failure'
+        run: |
+          LOG=$(tail -100 /tmp/test-output.log)
+          echo "log<<LOGEOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "LOGEOF" >> "$GITHUB_OUTPUT"
+
+      - name: Set final result
+        if: steps.test-dynamic.outcome == 'failure' || steps.test-static.outcome == 'failure'
+        run: exit 1
+
+  suggest-fix:
+    needs: test
+    if: always() && needs.test.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Suggest fix via LLM
+        uses: actions/github-script@v7
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TEST_LOG: ${{ needs.test.outputs.test-log }}
+        with:
+          script: |
+            const diff = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              mediaType: { format: 'diff' }
+            });
+
+            const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: 'deepseek/deepseek-chat-v4-0324',
+                messages: [{
+                  role: 'user',
+                  content: `This Dependabot PR updates a Go dependency. The tests failed. Analyze the failure and suggest a concrete fix.
+
+            PR diff:
+            \`\`\`
+            ${String(diff.data).slice(0, 8000)}
+            \`\`\`
+
+            Test output (last 100 lines):
+            \`\`\`
+            ${process.env.TEST_LOG || 'No output captured'}
+            \`\`\`
+
+            Respond with:
+            1. Root cause of the failure
+            2. Specific code changes needed to fix it (with file paths and line numbers)
+            3. Whether the fix is safe to apply automatically or needs human review`
+                }],
+                max_tokens: 2000,
+              }),
+            });
+
+            const result = await resp.json();
+            const suggestion = result.choices?.[0]?.message?.content || 'Unable to generate suggestion.';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Tests failed on this Dependabot PR\n\n${suggestion}`
+            });

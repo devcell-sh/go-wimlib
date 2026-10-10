@@ -1,0 +1,27 @@
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pin both the Action SHA and the npm package version to prevent
+      # supply chain attacks via floating @latest defaults.
+      - uses: alibaba/open-code-review@fabbdb296b0d97e2140ada8d54ca7d6d6d1d7ad4 # v1.12.13
+        with:
+          ocr_version: "1.12.13"
+          llm_url: "https://openrouter.ai/api/v1"
+          llm_auth_token: ${{ secrets.OPENROUTER_API_KEY }}
+          llm_model: "deepseek/deepseek-chat-v4-0324"
+          llm_use_anthropic: "false"
+          effort: "medium"
+          incremental: "true"
+          route_severity_below: "info"
