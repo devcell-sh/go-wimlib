@@ -1,0 +1,234 @@
+name: Update wimlib
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Force a specific wimlib version (leave empty to auto-detect)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect versions
+        id: versions
+        run: |
+          CURRENT=$(grep -oP 'wimlib-version: \["\K[^"]+' .github/workflows/pr.yml | head -1)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${{ inputs.version }}" ]; then
+            LATEST="${{ inputs.version }}"
+          else
+            LATEST=$(curl -sf https://api.github.com/repos/ebiggers/wimlib/tags \
+              | jq -r '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | first' \
+              | sed 's/^v//')
+          fi
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT" = "$LATEST" ] || [ -z "$LATEST" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for existing PR
+        if: steps.versions.outputs.needed == 'true'
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST="${{ steps.versions.outputs.latest }}"
+          EXISTING=$(gh pr list --head "deps/wimlib-${LATEST}" --json number --jq 'length')
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "PR already exists for wimlib ${LATEST}, skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify tarball exists
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
+        run: |
+          URL="https://wimlib.net/downloads/wimlib-${{ steps.versions.outputs.latest }}.tar.gz"
+          curl -sfI "$URL" > /dev/null || { echo "::error::Tarball not found at $URL"; exit 1; }
+
+      - uses: actions/setup-go@v5
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Install Task
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
+        uses: arduino/setup-task@v2
+
+      - name: Install wimlib ${{ steps.versions.outputs.latest }} from source
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
+        run: |
+          VERSION="${{ steps.versions.outputs.latest }}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libfuse3-dev libntfs-3g-dev pkg-config
+          curl -fsSL "https://wimlib.net/downloads/wimlib-${VERSION}.tar.gz" | tar -xz
+          cd "wimlib-${VERSION}"
+          ./configure --quiet
+          make -j"$(nproc)" --quiet
+          sudo make install --quiet
+          sudo ldconfig
+
+      - name: Test against new wimlib
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
+        id: test
+        continue-on-error: true
+        run: go test -v ./... 2>&1 | tee /tmp/test-output.log
+
+      - name: Update version in workflows
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
+        run: |
+          CURRENT="${{ steps.versions.outputs.current }}"
+          LATEST="${{ steps.versions.outputs.latest }}"
+          sed -i "s/wimlib-version: \[\"${CURRENT}\"\]/wimlib-version: [\"${LATEST}\"]/" \
+            .github/workflows/dev.yml \
+            .github/workflows/pr.yml \
+            .github/workflows/release.yml \
+            .github/workflows/dependabot-review.yml
+
+      - name: Fix API compatibility via LLM
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true' && steps.test.outcome == 'failure'
+        uses: actions/github-script@v7
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        with:
+          script: |
+            const fs = require('fs');
+            const version = '${{ steps.versions.outputs.latest }}';
+            const current = '${{ steps.versions.outputs.current }}';
+
+            const sourceFiles = [
+              'wimlib_cgo.go', 'wimlib.go', 'wimlib_iterate_cgo.go',
+              'wimlib_stub.go', 'wimlib_cgo_test.go'
+            ];
+            const sources = {};
+            for (const f of sourceFiles) {
+              try { sources[f] = fs.readFileSync(f, 'utf8'); } catch {}
+            }
+
+            let wimlibH = '';
+            try { wimlibH = fs.readFileSync(`wimlib-${version}/include/wimlib.h`, 'utf8'); } catch {}
+
+            const testLog = fs.readFileSync('/tmp/test-output.log', 'utf8').slice(-4000);
+
+            const sourceList = Object.entries(sources)
+              .map(([name, content]) => `### ${name}\n\`\`\`go\n${content.slice(0, 6000)}\n\`\`\``)
+              .join('\n\n');
+
+            const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: 'deepseek/deepseek-chat-v4-0324',
+                messages: [{
+                  role: 'user',
+                  content: `wimlib was updated from ${current} to ${version}. Our Go CGO bindings no longer compile or pass tests. Fix them.
+
+            New wimlib.h (key sections):
+            \`\`\`c
+            ${wimlibH.slice(0, 12000)}
+            \`\`\`
+
+            Our Go source files:
+            ${sourceList}
+
+            Test failures:
+            \`\`\`
+            ${testLog}
+            \`\`\`
+
+            Respond with ONLY a JSON array of changes: [{"file": "path", "search": "exact old string", "replace": "new string"}].
+            No markdown fences, no explanation, just the JSON array.`
+                }],
+                max_tokens: 4000,
+              }),
+            });
+
+            const result = await resp.json();
+            const content = result.choices?.[0]?.message?.content || '[]';
+
+            let changes;
+            try {
+              const cleaned = content.replace(/^```json?\n?/,'').replace(/\n?```$/,'').trim();
+              changes = JSON.parse(cleaned);
+            } catch {
+              core.warning('LLM response was not valid JSON, saving as suggestion');
+              fs.writeFileSync('/tmp/llm-suggestion.md', content);
+              return;
+            }
+
+            for (const {file, search, replace} of changes) {
+              try {
+                const src = fs.readFileSync(file, 'utf8');
+                if (src.includes(search)) {
+                  fs.writeFileSync(file, src.replace(search, replace));
+                  core.info(`Applied fix to ${file}`);
+                } else {
+                  core.warning(`Search string not found in ${file}, skipping`);
+                }
+              } catch (e) {
+                core.warning(`Error fixing ${file}: ${e.message}`);
+              }
+            }
+
+      - name: Re-test after fixes
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true' && steps.test.outcome == 'failure'
+        id: retest
+        continue-on-error: true
+        run: go test -v ./... 2>&1 | tee /tmp/retest-output.log
+
+      - name: Create PR
+        if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT="${{ steps.versions.outputs.current }}"
+          LATEST="${{ steps.versions.outputs.latest }}"
+          BRANCH="deps/wimlib-${LATEST}"
+
+          # Clean up extracted source before committing
+          rm -rf "wimlib-${LATEST}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
+          git commit -m "Update wimlib from ${CURRENT} to ${LATEST}"
+          git push -u origin "$BRANCH"
+
+          if [ "${{ steps.test.outcome }}" = "success" ]; then
+            STATUS="Tests pass against wimlib ${LATEST}."
+          elif [ "${{ steps.retest.outcome }}" = "success" ]; then
+            STATUS="Tests initially failed but LLM-generated fixes resolved the issues. Please review the code changes."
+          else
+            STATUS="⚠️ Tests still fail after automated fix attempt. Manual review needed."
+          fi
+
+          gh pr create \
+            --title "Update wimlib ${CURRENT} → ${LATEST}" \
+            --body "$(cat <<EOF
+          ## Update wimlib ${CURRENT} → ${LATEST}
+
+          ${STATUS}
+
+          Source: https://github.com/ebiggers/wimlib/releases
+          EOF
+          )"
