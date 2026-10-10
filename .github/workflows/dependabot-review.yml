@@ -87,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Suggest fix via LLM
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           TEST_LOG: ${{ needs.test.outputs.test-log }}
