@@ -61,7 +61,7 @@ jobs:
           URL="https://wimlib.net/downloads/wimlib-${{ steps.versions.outputs.latest }}.tar.gz"
           curl -sfI "$URL" > /dev/null || { echo "::error::Tarball not found at $URL"; exit 1; }
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: steps.versions.outputs.needed == 'true' && steps.existing.outputs.skip != 'true'
         with:
           go-version-file: go.mod
