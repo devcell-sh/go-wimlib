@@ -4,6 +4,8 @@ on:
   push:
     branches-ignore:
       - main
+      # Dependabot branches are already tested by pr.yml and dependabot-review.yml
+      - "dependabot/**"
 
 jobs:
   test:
