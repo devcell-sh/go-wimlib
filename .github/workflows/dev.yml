@@ -23,7 +23,7 @@ jobs:
       - name: Install wimlib ${{ matrix.wimlib-version }} from source
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libfuse3-dev libntfs-3g-dev pkg-config
+          sudo apt-get install -y -qq libfuse3-dev pkg-config
           curl -fsSL "https://wimlib.net/downloads/wimlib-${{ matrix.wimlib-version }}.tar.gz" | tar -xz
           cd "wimlib-${{ matrix.wimlib-version }}"
           ./configure --quiet
