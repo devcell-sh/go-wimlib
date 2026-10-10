@@ -12,7 +12,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pin both the Action SHA and the npm package version to prevent
       # supply chain attacks via floating @latest defaults.
       - uses: alibaba/open-code-review@fabbdb296b0d97e2140ada8d54ca7d6d6d1d7ad4 # v1.12.13
